@@ -54,21 +54,23 @@ SHEET_NAME = "Contrats analysés"
 # Chargement
 # ─────────────────────────────────────────────────────────────
 
-def load_db(path: str) -> pd.DataFrame:
+def load_db(path) -> pd.DataFrame:
     """
     Charge la base depuis un fichier Excel.
-    Crée un DataFrame vide avec les bonnes colonnes si le fichier n'existe pas.
+    Accepte un chemin (str) ou un objet fichier (st.file_uploader / BytesIO).
     """
-    if os.path.exists(path):
+    is_file_obj = hasattr(path, 'read')
+    path_exists = (not is_file_obj) and path and os.path.exists(str(path))
+
+    if is_file_obj or path_exists:
         try:
             df = pd.read_excel(path, sheet_name=SHEET_NAME, dtype=str)
-            # Ajouter les colonnes manquantes (évolution du schéma)
             for col in DB_COLUMNS:
                 if col not in df.columns:
                     df[col] = ""
             df = df[DB_COLUMNS]
             df = df.fillna("")
-            logger.info(f"Base chargée : {len(df)} contrats depuis {path}")
+            logger.info(f"Base chargée : {len(df)} contrats")
             return df
         except Exception as e:
             logger.error(f"Erreur chargement base : {e}")

@@ -1,7 +1,8 @@
 """
 app.py - Analyseur de Contrats d'Assurance-Crédit
+Design: dark fintech, single-page scroll
 """
-import os, time, logging, tempfile, shutil
+import os, time, logging, tempfile, shutil, io
 from datetime import datetime
 import pandas as pd
 import streamlit as st
@@ -30,297 +31,720 @@ FIELD_LABELS = {
     "limite_decaissement": "Limite de décaissement", "zone_discretionnaire": "Zone discrétionnaire",
 }
 
-st.set_page_config(page_title="Analyseur Assurance-Crédit", page_icon="📋", layout="wide")
-st.markdown("""<style>
-.main-header{background:linear-gradient(135deg,#1F3864 0%,#2E75B6 100%);padding:1.5rem 2rem;
-border-radius:12px;color:white;margin-bottom:1.5rem;}
-.section-header{font-size:1.1rem;font-weight:700;color:#1F3864;border-bottom:2px solid #2E75B6;
-padding-bottom:.3rem;margin:1.2rem 0 .8rem 0;}
-</style>""", unsafe_allow_html=True)
-st.markdown("""<div class="main-header"><h1 style="margin:0">📋 Analyseur de Contrats d'Assurance-Crédit</h1>
-<p style="margin:.3rem 0 0 0;opacity:.85">Atradius Modula · Coface · Euler Hermes · FR/EN · PDF · DOCX · TXT</p>
-</div>""", unsafe_allow_html=True)
+st.set_page_config(
+    page_title="CIA — Credit Insurance Analyzer",
+    page_icon="⬡",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-# ── Sidebar ──
-with st.sidebar:
-    st.markdown("## ⚙️ Configuration")
-    use_llm = st.toggle("Activer l'analyse IA (Claude)", value=True)
-    api_key = None
-    if use_llm:
-        api_key_input = st.text_input("Clé API Anthropic", type="password")
-        api_key = api_key_input or os.environ.get("ANTHROPIC_API_KEY")
-    st.divider()
-    st.markdown("### 🗄️ Base de données")
-    db_path = st.text_input("Chemin fichier base", value=os.environ.get("CIA_DB_PATH", DEFAULT_DB_PATH))
-    uploaded_db = st.file_uploader("Charger une base existante", type=["xlsx"])
-    if uploaded_db:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
-            tmp.write(uploaded_db.read())
-        shutil.copy(tmp.name, db_path)
-        st.success(f"✅ Base importée → {db_path}")
-        if "db" in st.session_state:
-            del st.session_state["db"]
-    st.divider()
-    log = ProcessingLog()
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&display=swap');
+
+/* ── Reset & Base ── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body, [data-testid="stAppViewContainer"] {
+    background: #080C12 !important;
+    color: #E8EDF5 !important;
+    font-family: 'DM Mono', monospace !important;
+}
+
+[data-testid="stAppViewContainer"] {
+    background: radial-gradient(ellipse at 20% 0%, #0D1F3C 0%, #080C12 60%) !important;
+}
+
+/* Hide default streamlit chrome */
+#MainMenu, footer, header, [data-testid="stToolbar"],
+[data-testid="stDecoration"], [data-testid="stStatusWidget"] { display: none !important; }
+
+[data-testid="stSidebar"] { display: none !important; }
+
+/* Main container */
+.main .block-container {
+    max-width: 1200px !important;
+    padding: 0 2rem 4rem 2rem !important;
+}
+
+/* ── Hero ── */
+.hero {
+    padding: 4rem 0 3rem 0;
+    border-bottom: 1px solid rgba(99,179,237,0.15);
+    margin-bottom: 3rem;
+    position: relative;
+    overflow: hidden;
+}
+.hero::before {
+    content: '⬡';
+    position: absolute;
+    right: -2rem;
+    top: -1rem;
+    font-size: 18rem;
+    color: rgba(99,179,237,0.03);
+    line-height: 1;
+    pointer-events: none;
+}
+.hero-tag {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.7rem;
+    font-weight: 500;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: #63B3ED;
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+.hero-tag::before {
+    content: '';
+    display: inline-block;
+    width: 24px;
+    height: 1px;
+    background: #63B3ED;
+}
+.hero h1 {
+    font-family: 'Syne', sans-serif !important;
+    font-size: clamp(2.2rem, 4vw, 3.5rem) !important;
+    font-weight: 800 !important;
+    line-height: 1.1 !important;
+    margin: 0 0 1rem 0 !important;
+    color: #F0F4FF !important;
+    letter-spacing: -0.02em;
+}
+.hero h1 span { color: #63B3ED; }
+.hero-sub {
+    font-size: 0.85rem;
+    color: #6B7A99;
+    letter-spacing: 0.05em;
+}
+
+/* ── Section titles ── */
+.section-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: #F0F4FF;
+    margin: 3rem 0 1.5rem 0;
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    letter-spacing: -0.01em;
+}
+.section-title .num {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.7rem;
+    font-weight: 400;
+    color: #63B3ED;
+    background: rgba(99,179,237,0.1);
+    border: 1px solid rgba(99,179,237,0.2);
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    letter-spacing: 0.1em;
+}
+.section-divider {
+    height: 1px;
+    background: linear-gradient(90deg, rgba(99,179,237,0.2) 0%, transparent 100%);
+    margin: 0 0 2rem 0;
+}
+
+/* ── Cards ── */
+.card {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-bottom: 1rem;
+    transition: border-color 0.2s;
+}
+.card:hover { border-color: rgba(99,179,237,0.2); }
+.card-accent {
+    border-left: 2px solid #63B3ED;
+    background: rgba(99,179,237,0.04);
+}
+
+/* ── Config bar ── */
+.config-bar {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px;
+    padding: 1.2rem 1.5rem;
+    margin-bottom: 2rem;
+    display: flex;
+    align-items: center;
+    gap: 2rem;
+    flex-wrap: wrap;
+}
+
+/* ── Stat badges ── */
+.stats-row {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 2rem;
+    flex-wrap: wrap;
+}
+.stat-badge {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px;
+    padding: 0.8rem 1.2rem;
+    flex: 1;
+    min-width: 140px;
+}
+.stat-badge .val {
+    font-family: 'Syne', sans-serif;
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: #63B3ED;
+    line-height: 1;
+}
+.stat-badge .lbl {
+    font-size: 0.65rem;
+    color: #6B7A99;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-top: 0.3rem;
+}
+
+/* ── Field grid ── */
+.field-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+}
+.field-item {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.05);
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+}
+.field-item .field-lbl {
+    font-size: 0.6rem;
+    color: #6B7A99;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 0.3rem;
+}
+.field-item .field-val {
+    font-size: 0.85rem;
+    color: #E8EDF5;
+    font-weight: 500;
+}
+.field-item .field-val.empty { color: #3A4560; font-style: italic; }
+.field-item.found { border-left: 2px solid rgba(99,179,237,0.4); }
+
+/* ── Streamlit overrides ── */
+.stTextInput > label, .stFileUploader > label,
+.stToggle > label, .stSelectbox > label,
+.stMultiSelect > label, .stTextArea > label {
+    font-family: 'DM Mono', monospace !important;
+    font-size: 0.7rem !important;
+    letter-spacing: 0.1em !important;
+    text-transform: uppercase !important;
+    color: #6B7A99 !important;
+}
+
+.stTextInput input, .stTextArea textarea {
+    background: rgba(255,255,255,0.04) !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+    border-radius: 8px !important;
+    color: #E8EDF5 !important;
+    font-family: 'DM Mono', monospace !important;
+    font-size: 0.85rem !important;
+}
+.stTextInput input:focus, .stTextArea textarea:focus {
+    border-color: rgba(99,179,237,0.4) !important;
+    box-shadow: 0 0 0 2px rgba(99,179,237,0.08) !important;
+}
+
+.stButton > button {
+    background: #63B3ED !important;
+    color: #080C12 !important;
+    border: none !important;
+    border-radius: 8px !important;
+    font-family: 'DM Mono', monospace !important;
+    font-size: 0.75rem !important;
+    font-weight: 500 !important;
+    letter-spacing: 0.08em !important;
+    padding: 0.6rem 1.4rem !important;
+    transition: all 0.15s !important;
+}
+.stButton > button:hover {
+    background: #90CDF4 !important;
+    transform: translateY(-1px) !important;
+}
+.stButton > button[kind="secondary"] {
+    background: rgba(255,255,255,0.04) !important;
+    color: #E8EDF5 !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+}
+.stButton > button[kind="secondary"]:hover {
+    background: rgba(255,255,255,0.08) !important;
+    border-color: rgba(99,179,237,0.3) !important;
+}
+
+.stDownloadButton > button {
+    background: rgba(99,179,237,0.1) !important;
+    color: #63B3ED !important;
+    border: 1px solid rgba(99,179,237,0.25) !important;
+    border-radius: 8px !important;
+    font-family: 'DM Mono', monospace !important;
+    font-size: 0.75rem !important;
+    letter-spacing: 0.08em !important;
+}
+.stDownloadButton > button:hover {
+    background: rgba(99,179,237,0.18) !important;
+}
+
+/* Progress bar */
+.stProgress > div > div {
+    background: linear-gradient(90deg, #63B3ED, #90CDF4) !important;
+    border-radius: 4px !important;
+}
+.stProgress > div {
+    background: rgba(255,255,255,0.05) !important;
+    border-radius: 4px !important;
+}
+
+/* Expander */
+.streamlit-expanderHeader {
+    background: rgba(255,255,255,0.02) !important;
+    border: 1px solid rgba(255,255,255,0.06) !important;
+    border-radius: 10px !important;
+    font-family: 'DM Mono', monospace !important;
+    font-size: 0.8rem !important;
+    color: #E8EDF5 !important;
+}
+.streamlit-expanderContent {
+    background: rgba(255,255,255,0.01) !important;
+    border: 1px solid rgba(255,255,255,0.04) !important;
+    border-top: none !important;
+    border-radius: 0 0 10px 10px !important;
+}
+
+/* Alerts */
+.stSuccess { background: rgba(72,187,120,0.08) !important; border: 1px solid rgba(72,187,120,0.2) !important; border-radius: 8px !important; }
+.stWarning { background: rgba(237,137,54,0.08) !important; border: 1px solid rgba(237,137,54,0.2) !important; border-radius: 8px !important; }
+.stError   { background: rgba(245,101,101,0.08) !important; border: 1px solid rgba(245,101,101,0.2) !important; border-radius: 8px !important; }
+.stInfo    { background: rgba(99,179,237,0.06) !important; border: 1px solid rgba(99,179,237,0.15) !important; border-radius: 8px !important; }
+
+/* Dataframe */
+[data-testid="stDataFrame"] {
+    border: 1px solid rgba(255,255,255,0.06) !important;
+    border-radius: 10px !important;
+    overflow: hidden !important;
+}
+
+/* File uploader */
+[data-testid="stFileUploader"] {
+    background: rgba(255,255,255,0.02) !important;
+    border: 1px dashed rgba(99,179,237,0.2) !important;
+    border-radius: 12px !important;
+    padding: 1rem !important;
+}
+
+/* Toggle */
+.stToggle { color: #E8EDF5 !important; }
+
+/* Multiselect */
+[data-testid="stMultiSelect"] > div {
+    background: rgba(255,255,255,0.04) !important;
+    border-color: rgba(255,255,255,0.08) !important;
+    border-radius: 8px !important;
+}
+
+/* Selectbox */
+[data-testid="stSelectbox"] > div {
+    background: rgba(255,255,255,0.04) !important;
+    border-color: rgba(255,255,255,0.08) !important;
+}
+
+/* Scroll divider */
+.scroll-divider {
+    height: 60px;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    color: rgba(99,179,237,0.2);
+    font-size: 0.65rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    margin: 2rem 0;
+}
+.scroll-divider::before, .scroll-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: rgba(255,255,255,0.04);
+}
+
+/* Confidence dots */
+.conf-high { color: #68D391; font-size: 0.65rem; }
+.conf-med  { color: #F6AD55; font-size: 0.65rem; }
+.conf-low  { color: #FC8181; font-size: 0.65rem; }
+
+/* Groupe table header */
+.groupe-header {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: #63B3ED;
+    margin: 1.5rem 0 0.75rem 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.groupe-header::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: rgba(99,179,237,0.15);
+}
+</style>
+""", unsafe_allow_html=True)
 
 # ── Session state ──
-for k, v in [("all_results", []), ("current_text", {}), ("pending_upserts", [])]:
+for k, v in [("all_results", []), ("current_text", {}), ("db", None), ("db_path", DEFAULT_DB_PATH)]:
     if k not in st.session_state:
         st.session_state[k] = v
-if "db" not in st.session_state:
-    st.session_state.db = load_db(db_path)
 
-tab_upload, tab_results, tab_db, tab_export = st.tabs([
-    "📤 Import & Analyse", "📊 Résultats", "🗄️ Base de données", "📥 Export Excel"
-])
+# ════════════════════════════════════════════
+# HERO
+# ════════════════════════════════════════════
+st.markdown("""
+<div class="hero">
+    <div class="hero-tag">Credit Insurance Analyzer</div>
+    <h1>Extraction<br>automatique<br><span>des données contractuelles</span></h1>
+    <div class="hero-sub">Atradius Modula · Coface · Euler Hermes · FR / EN · PDF · DOCX · TXT</div>
+</div>
+""", unsafe_allow_html=True)
 
-# ═══ TAB 1 ════════════════════════════════════════════════════
-with tab_upload:
-    st.markdown('<div class="section-header">Import des contrats</div>', unsafe_allow_html=True)
-    uploaded_files = st.file_uploader("Déposez vos contrats", type=["pdf","docx","txt"], accept_multiple_files=True)
+# ════════════════════════════════════════════
+# SECTION 0 — CONFIG (inline, no sidebar)
+# ════════════════════════════════════════════
+st.markdown('<div class="section-title"><span class="num">CONFIG</span> Paramètres</div><div class="section-divider"></div>', unsafe_allow_html=True)
 
-    if uploaded_files:
-        st.success(f"✅ {len(uploaded_files)} fichier(s) chargé(s)")
-        c1, c2 = st.columns([2,1])
-        with c1: analyze_btn = st.button(f"🔍 Analyser {len(uploaded_files)} contrat(s)", type="primary", use_container_width=True)
-        with c2: show_text = st.checkbox("Afficher le texte extrait")
+with st.container():
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c1:
+        use_llm = st.toggle("Analyse IA (Claude)", value=True)
+    with c2:
+        api_key = None
+        if use_llm:
+            api_key_input = st.text_input("Clé API Anthropic", type="password",
+                placeholder="sk-ant-... (ou variable ANTHROPIC_API_KEY)")
+            api_key = api_key_input or os.environ.get("ANTHROPIC_API_KEY")
 
-        if analyze_btn:
-            pb = st.progress(0); st_txt = st.empty()
-            st.session_state.pending_upserts = []
-            for i, uf in enumerate(uploaded_files):
-                st_txt.text(f"Analyse de {uf.name}...")
-                pb.progress(i / len(uploaded_files))
-                try:
-                    tmp = save_uploaded_file(uf, TMP_DIR)
-                    raw, _ = extract_text(tmp)
-                    clean = clean_text(raw)
-                    st.session_state.current_text[uf.name] = clean
-                    if not clean.strip():
-                        st.warning(f"⚠️ Aucun texte dans {uf.name}"); continue
+# ════════════════════════════════════════════
+# SECTION 1 — BASE DE DONNÉES
+# ════════════════════════════════════════════
+st.markdown('<div class="scroll-divider">base de données</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-title"><span class="num">01</span> Base de données</div><div class="section-divider"></div>', unsafe_allow_html=True)
 
-                    regex_r = extract_all_fields(clean)
-                    llm_r = {}
-                    if use_llm and (api_key or os.environ.get("ANTHROPIC_API_KEY")):
-                        with st.spinner(f"Analyse IA {uf.name}..."):
-                            llm_r = extract_with_llm(clean, api_key=api_key)
-                    merged = merge_results(regex_r, llm_r)
-                    found, total = count_found_fields(merged)
-                    num_police = (merged.get("numero_police") or {}).get("value", "")
-                    already = exists_in_db(st.session_state.db, num_police) if num_police else False
+db_col1, db_col2 = st.columns([3, 2])
 
-                    entry = {
-                        "filename": uf.name, "merged": merged,
-                        "already_exists": already, "numero_police": num_police,
-                        "edited_values": {
-                            f: (v.get("value","") if isinstance(v,dict) and not isinstance(v.get("value"),list) else "")
-                            for f,v in merged.items()
-                        }
-                    }
-                    existing = next((r for r in st.session_state.all_results if r["filename"]==uf.name), None)
-                    if existing: existing.update(entry)
-                    else: st.session_state.all_results.append(entry)
-                    st.session_state.pending_upserts.append(uf.name)
-                    log.add_entry(uf.name, "success", found, total, [], time.time())
-                    icon = "🔄" if already else "✅"
-                    note = " — **existe déjà en base**" if already else ""
-                    st.success(f"{icon} {uf.name} — {found}/{total} champs{note}")
-                except Exception as e:
-                    st.error(f"❌ {uf.name} : {e}"); logger.error(e)
-            pb.progress(1.0); st_txt.text("Analyse terminée !")
-            if st.session_state.pending_upserts:
-                st.info("👉 Allez dans **Résultats** pour valider et enregistrer en base.")
+with db_col1:
+    st.markdown("**Charger une base existante**")
+    uploaded_db = st.file_uploader("Importer contrats_base.xlsx", type=["xlsx"], key="db_upload",
+        help="Charge ta base depuis ton PC / OneDrive au démarrage")
+    if uploaded_db:
+        st.session_state.db = load_db(uploaded_db)
+        st.success(f"✓ Base chargée — {len(st.session_state.db)} contrat(s)")
 
-        if show_text and st.session_state.current_text:
-            st.markdown('<div class="section-header">Texte extrait</div>', unsafe_allow_html=True)
-            sel = st.selectbox("Fichier", list(st.session_state.current_text.keys()))
-            if sel: st.text_area("Texte brut", st.session_state.current_text[sel], height=300)
+    if st.session_state.db is None:
+        st.session_state.db = load_db(st.session_state.db_path)
 
-# ═══ TAB 2 ════════════════════════════════════════════════════
-with tab_results:
-    if not st.session_state.all_results:
-        st.info("💡 Aucun contrat analysé. Utilisez **Import & Analyse**.")
-    else:
-        st.markdown('<div class="section-header">Validation, correction et enregistrement</div>', unsafe_allow_html=True)
-        for result in st.session_state.all_results:
-            already = result.get("already_exists", False)
-            badge = "🔄 Mise à jour" if already else "🆕 Nouveau"
-            with st.expander(f"📄 {result['filename']}  —  {badge}", expanded=True):
-                merged = result["merged"]
+with db_col2:
+    db = st.session_state.db
+    nb = len(db) if db is not None and not db.empty else 0
+
+    st.markdown(f"""
+    <div class="stats-row">
+        <div class="stat-badge">
+            <div class="val">{nb}</div>
+            <div class="lbl">Contrats en base</div>
+        </div>
+        <div class="stat-badge">
+            <div class="val">{len(st.session_state.all_results)}</div>
+            <div class="lbl">Analysés (session)</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if db is not None and not db.empty:
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as w:
+            db.to_excel(w, index=False, sheet_name="Contrats analysés")
+        st.download_button(
+            "⬇ Télécharger la base actuelle",
+            data=buf.getvalue(),
+            file_name="contrats_base.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
+# ════════════════════════════════════════════
+# SECTION 2 — IMPORT & ANALYSE
+# ════════════════════════════════════════════
+st.markdown('<div class="scroll-divider">import & analyse</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-title"><span class="num">02</span> Import & Analyse</div><div class="section-divider"></div>', unsafe_allow_html=True)
+
+uploaded_files = st.file_uploader(
+    "Déposer les contrats à analyser",
+    type=["pdf", "docx", "txt"],
+    accept_multiple_files=True,
+    key="contracts_upload"
+)
+
+if uploaded_files:
+    st.markdown(f"<div style='font-size:.75rem;color:#63B3ED;margin:.5rem 0;'>→ {len(uploaded_files)} fichier(s) prêt(s)</div>", unsafe_allow_html=True)
+    col_btn1, col_btn2 = st.columns([2, 1])
+    with col_btn1:
+        analyze_btn = st.button(f"Analyser {len(uploaded_files)} contrat(s)", type="primary", use_container_width=True)
+    with col_btn2:
+        show_text = st.checkbox("Voir texte extrait")
+
+    if analyze_btn:
+        pb = st.progress(0)
+        st_txt = st.empty()
+        for i, uf in enumerate(uploaded_files):
+            st_txt.markdown(f"<div style='font-size:.75rem;color:#6B7A99;font-family:DM Mono,monospace'>→ {uf.name}...</div>", unsafe_allow_html=True)
+            pb.progress(i / len(uploaded_files))
+            try:
+                tmp = save_uploaded_file(uf, TMP_DIR)
+                raw, _ = extract_text(tmp)
+                clean = clean_text(raw)
+                st.session_state.current_text[uf.name] = clean
+                if not clean.strip():
+                    st.warning(f"Aucun texte extrait — {uf.name}")
+                    continue
+                regex_r = extract_all_fields(clean)
+                llm_r = {}
+                if use_llm and (api_key or os.environ.get("ANTHROPIC_API_KEY")):
+                    with st.spinner(f"Analyse IA..."):
+                        llm_r = extract_with_llm(clean, api_key=api_key)
+                merged = merge_results(regex_r, llm_r)
                 found, total = count_found_fields(merged)
-                st.progress(found/total if total>0 else 0, text=f"{found}/{total} champs trouvés")
-                if already:
-                    st.warning(f"⚠️ Le contrat **{result.get('numero_police','')}** existe déjà. Enregistrer écrasera la ligne.")
+                num_police = (merged.get("numero_police") or {}).get("value", "")
+                already = exists_in_db(st.session_state.db, num_police) if (num_police and st.session_state.db is not None) else False
+                entry = {
+                    "filename": uf.name, "merged": merged,
+                    "already_exists": already, "numero_police": num_police,
+                    "edited_values": {
+                        f: (v.get("value", "") if isinstance(v, dict) and not isinstance(v.get("value"), list) else "")
+                        for f, v in merged.items()
+                    }
+                }
+                existing = next((r for r in st.session_state.all_results if r["filename"] == uf.name), None)
+                if existing: existing.update(entry)
+                else: st.session_state.all_results.append(entry)
+                tag = "🔄 MAJ" if already else "✓ NOUVEAU"
+                st.success(f"{tag} — {uf.name}  ·  {found}/{total} champs extraits")
+            except Exception as e:
+                st.error(f"Erreur — {uf.name} : {e}")
+                logger.error(e)
+        pb.progress(1.0)
+        st_txt.empty()
+        st.info("→ Faites défiler jusqu'à Résultats pour valider et enregistrer")
 
+    if show_text and st.session_state.current_text:
+        sel = st.selectbox("Fichier", list(st.session_state.current_text.keys()))
+        if sel:
+            st.text_area("Texte extrait", st.session_state.current_text[sel], height=200)
+
+# ════════════════════════════════════════════
+# SECTION 3 — RÉSULTATS
+# ════════════════════════════════════════════
+if st.session_state.all_results:
+    st.markdown('<div class="scroll-divider">résultats</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title"><span class="num">03</span> Résultats & Validation</div><div class="section-divider"></div>', unsafe_allow_html=True)
+
+    for result in st.session_state.all_results:
+        already = result.get("already_exists", False)
+        merged = result["merged"]
+        found, total = count_found_fields(merged)
+        pct = int(found / total * 100) if total > 0 else 0
+        badge_txt = "MISE À JOUR" if already else "NOUVEAU"
+
+        with st.expander(f"{'🔄' if already else '◆'} {result['filename']}  ·  {found}/{total} champs  ·  {badge_txt}", expanded=True):
+
+            # Progress
+            st.progress(found / total if total > 0 else 0)
+
+            if already:
+                st.warning(f"Ce contrat (N° {result.get('numero_police','')}) existe déjà en base. Enregistrer écrasera la ligne existante.")
+
+            # Fields grid — display only (read mode)
+            fields_html = '<div class="field-grid">'
+            for field, label in FIELD_LABELS.items():
+                fd = merged.get(field, {})
+                val = result["edited_values"].get(field, fd.get("value", "") if isinstance(fd, dict) else "")
+                if isinstance(val, list): val = ""
+                conf = fd.get("confidence", 0.0) if isinstance(fd, dict) else 0.0
+                found_class = "found" if val else ""
+                empty_class = "empty" if not val else ""
+                display_val = val if val else "—"
+                fields_html += f'''<div class="field-item {found_class}">
+                    <div class="field-lbl">{label}</div>
+                    <div class="field-val {empty_class}">{display_val}</div>
+                </div>'''
+            fields_html += '</div>'
+            st.markdown(fields_html, unsafe_allow_html=True)
+
+            # Edit mode
+            with st.expander("✏️ Modifier les valeurs", expanded=False):
                 cols = st.columns(2)
                 for idx, (field, label) in enumerate(FIELD_LABELS.items()):
                     with cols[idx % 2]:
                         fd = merged.get(field, {})
-                        cur = result["edited_values"].get(field, fd.get("value","") if isinstance(fd,dict) else "")
+                        cur = result["edited_values"].get(field, fd.get("value", "") if isinstance(fd, dict) else "")
                         if isinstance(cur, list): cur = ""
-                        conf = fd.get("confidence", 0.0) if isinstance(fd,dict) else 0.0
-                        new_val = st.text_input(
-                            f"{label} {format_confidence(conf)}", value=str(cur) if cur else "",
-                            key=f"edit_{result['filename']}_{field}",
-                            help=f"Méthode : {fd.get('method','') if isinstance(fd,dict) else ''}"
-                        )
+                        conf = fd.get("confidence", 0.0) if isinstance(fd, dict) else 0.0
+                        new_val = st.text_input(label, value=str(cur) if cur else "",
+                            key=f"edit_{result['filename']}_{field}")
                         result["edited_values"][field] = new_val
 
-                gp_d = merged.get("groupe_polices", {})
-                polices = gp_d.get("value") if isinstance(gp_d,dict) else None
-                if polices and isinstance(polices, list):
-                    st.markdown(f"**🏢 Groupe de polices ({len(polices)} polices)**")
-                    df_g = pd.DataFrame(polices).rename(columns={"numero":"N° Police","devise":"Devise","assure":"Assuré"})
-                    df_g["Devise"] = df_g["Devise"].fillna("—")
-                    st.dataframe(df_g, use_container_width=True, hide_index=True)
+            # Groupe de polices
+            gp_d = merged.get("groupe_polices", {})
+            polices = gp_d.get("value") if isinstance(gp_d, dict) else None
+            if polices and isinstance(polices, list):
+                st.markdown(f'<div class="groupe-header">Groupe de polices — {len(polices)} membres</div>', unsafe_allow_html=True)
+                df_g = pd.DataFrame(polices).rename(columns={"numero": "N° Police", "devise": "Devise", "assure": "Assuré"})
+                df_g["Devise"] = df_g["Devise"].fillna("—")
+                st.dataframe(df_g, use_container_width=True, hide_index=True)
 
-                st.divider()
-                if st.button("💾 Enregistrer en base", key=f"save_{result['filename']}", type="primary"):
+            # Save button
+            st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)
+            save_col1, _ = st.columns([1, 3])
+            with save_col1:
+                if st.button("💾 Enregistrer en base", key=f"save_{result['filename']}", type="primary", use_container_width=True):
                     merged_edited = dict(merged)
                     for field in FIELD_LABELS:
                         ev = result["edited_values"].get(field, "")
                         orig = merged.get(field, {})
                         merged_edited[field] = {
                             "value": ev,
-                            "confidence": (orig.get("confidence",0.0) if isinstance(orig,dict) else 0.0),
-                            "method": (orig.get("method","manual") if isinstance(orig,dict) else "manual")
+                            "confidence": orig.get("confidence", 0.0) if isinstance(orig, dict) else 0.0,
+                            "method": orig.get("method", "manual") if isinstance(orig, dict) else "manual"
                         }
                     db_row = merged_to_db_row(result["filename"], merged_edited)
+                    if st.session_state.db is None:
+                        st.session_state.db = load_db(st.session_state.db_path)
                     st.session_state.db, action = upsert_row(st.session_state.db, db_row)
-                    if save_db(st.session_state.db, db_path):
-                        verb = "mis à jour" if action=="updated" else "ajouté"
-                        st.success(f"✅ Contrat {verb} dans `{db_path}`")
-                        result["already_exists"] = True
-                    else:
-                        st.error("❌ Erreur de sauvegarde.")
+                    verb = "mis à jour" if action == "updated" else "ajouté"
+                    st.success(f"✓ Contrat {verb} en base")
+                    result["already_exists"] = True
 
-# ═══ TAB 3 ════════════════════════════════════════════════════
-with tab_db:
-    st.markdown('<div class="section-header">Parcourir et modifier la base</div>', unsafe_allow_html=True)
+# ════════════════════════════════════════════
+# SECTION 4 — BASE / PARCOURIR
+# ════════════════════════════════════════════
+st.markdown('<div class="scroll-divider">base de données</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-title"><span class="num">04</span> Parcourir & Modifier la base</div><div class="section-divider"></div>', unsafe_allow_html=True)
 
-    c_reload, c_info = st.columns([1, 3])
-    with c_reload:
-        if st.button("🔄 Recharger", use_container_width=True):
-            st.session_state.db = load_db(db_path)
-            st.success("Base rechargée.")
+db = st.session_state.db
+if db is None or db.empty:
+    st.markdown("<div style='color:#3A4560;font-size:.85rem;padding:2rem 0'>Aucune donnée en base. Chargez une base existante ou analysez des contrats.</div>", unsafe_allow_html=True)
+else:
+    # Stats
+    st.markdown(f"<div style='font-size:.7rem;color:#6B7A99;margin-bottom:1.5rem'>{len(db)} contrat(s) · dernière MAJ {datetime.now().strftime('%d/%m/%Y')}</div>", unsafe_allow_html=True)
 
-    db: pd.DataFrame = st.session_state.db
+    # Filtres
+    fc1, fc2, fc3 = st.columns(3)
+    f_police  = fc1.text_input("Filtrer N° Police", "")
+    f_assure  = fc2.text_input("Filtrer Assuré", "")
+    f_assureur = fc3.text_input("Filtrer Assureur", "")
 
-    if db.empty:
-        st.info(f"La base est vide. Analysez et enregistrez des contrats pour les voir ici.\n\nFichier : `{db_path}`")
-    else:
-        with c_info:
-            st.caption(f"📁 `{db_path}`  —  **{len(db)} contrat(s)**")
+    mask = pd.Series([True] * len(db), index=db.index)
+    if f_police:   mask &= db["N° Police"].str.contains(f_police, case=False, na=False)
+    if f_assure:   mask &= db["Assuré"].str.contains(f_assure, case=False, na=False)
+    if f_assureur: mask &= db["Assureur"].str.contains(f_assureur, case=False, na=False)
+    db_view = db[mask].copy()
 
-        # Filtres
-        with st.expander("🔍 Filtrer", expanded=False):
-            fc1, fc2, fc3 = st.columns(3)
-            f_police  = fc1.text_input("N° Police contient", "")
-            f_assure  = fc2.text_input("Assuré contient", "")
-            f_assureur = fc3.text_input("Assureur contient", "")
+    if len(db_view) < len(db):
+        st.markdown(f"<div style='font-size:.7rem;color:#63B3ED;margin:.5rem 0'>{len(db_view)} résultat(s) sur {len(db)}</div>", unsafe_allow_html=True)
 
-        mask = pd.Series([True]*len(db), index=db.index)
-        if f_police:  mask &= db["N° Police"].str.contains(f_police, case=False, na=False)
-        if f_assure:  mask &= db["Assuré"].str.contains(f_assure, case=False, na=False)
-        if f_assureur: mask &= db["Assureur"].str.contains(f_assureur, case=False, na=False)
-        db_view = db[mask].copy()
-        st.caption(f"{len(db_view)} résultat(s)")
+    # Tableau éditable
+    edited_df = st.data_editor(db_view, use_container_width=True, hide_index=False,
+        num_rows="fixed", key="db_editor")
 
-        # Tableau éditable
-        st.markdown("**Modifier directement dans le tableau, puis sauvegarder :**")
-        edited_df = st.data_editor(
-            db_view, use_container_width=True, hide_index=False, num_rows="fixed",
-            key="db_editor"
+    # Actions
+    st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+    a1, a2, a3 = st.columns([1, 2, 1])
+
+    with a1:
+        if st.button("💾 Sauvegarder modifications", type="primary", use_container_width=True):
+            now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            for idx in edited_df.index:
+                for col in DB_COLUMNS:
+                    if col in edited_df.columns and idx in st.session_state.db.index:
+                        st.session_state.db.at[idx, col] = edited_df.at[idx, col]
+                if idx in st.session_state.db.index:
+                    st.session_state.db.at[idx, "Date de MAJ"] = now
+            st.success("✓ Modifications sauvegardées en mémoire — pensez à télécharger la base")
+
+    with a2:
+        to_delete = st.multiselect("Supprimer des polices",
+            options=db_view["N° Police"].tolist(), placeholder="Sélectionner N° Police(s)…")
+
+    with a3:
+        if to_delete:
+            if st.button(f"🗑 Supprimer {len(to_delete)} ligne(s)", type="primary", use_container_width=True):
+                indices = db[db["N° Police"].isin(to_delete)].index.tolist()
+                st.session_state.db = delete_rows(st.session_state.db, indices)
+                st.success(f"✓ {len(indices)} ligne(s) supprimée(s)")
+                st.rerun()
+
+# ════════════════════════════════════════════
+# SECTION 5 — TÉLÉCHARGEMENT FINAL
+# ════════════════════════════════════════════
+st.markdown('<div class="scroll-divider">export</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-title"><span class="num">05</span> Télécharger la base</div><div class="section-divider"></div>', unsafe_allow_html=True)
+
+dl_col1, dl_col2 = st.columns([2, 1])
+
+with dl_col1:
+    st.markdown("""
+    <div class="card card-accent">
+        <div style="font-size:.7rem;color:#6B7A99;letter-spacing:.1em;text-transform:uppercase;margin-bottom:.5rem">Workflow recommandé</div>
+        <div style="font-size:.82rem;color:#A0AEC0;line-height:1.8">
+        1 · Charger la base en début de session (section 01)<br>
+        2 · Analyser les nouveaux contrats (section 02)<br>
+        3 · Valider et enregistrer en base (section 03)<br>
+        4 · Télécharger la base mise à jour ci-dessous<br>
+        5 · Sauvegarder sur OneDrive / SharePoint
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with dl_col2:
+    db_final = st.session_state.db
+    if db_final is not None and not db_final.empty:
+        buf = io.BytesIO()
+        save_db(db_final, buf if hasattr(buf, 'write') else "/tmp/export_final.xlsx")
+        # Use simple pandas export for download
+        buf2 = io.BytesIO()
+        with pd.ExcelWriter(buf2, engine="openpyxl") as w:
+            db_final.to_excel(w, index=False, sheet_name="Contrats analysés")
+        st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+        st.download_button(
+            "⬇ Télécharger contrats_base.xlsx",
+            data=buf2.getvalue(),
+            file_name="contrats_base.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            type="primary"
         )
-
-        # Actions
-        st.divider()
-        a1, a2, a3 = st.columns([1, 2, 1])
-
-        with a1:
-            if st.button("💾 Sauvegarder modifications", type="primary", use_container_width=True):
-                now = datetime.now().strftime("%d/%m/%Y %H:%M")
-                for idx in edited_df.index:
-                    for col in DB_COLUMNS:
-                        if col in edited_df.columns and idx in st.session_state.db.index:
-                            st.session_state.db.at[idx, col] = edited_df.at[idx, col]
-                    if idx in st.session_state.db.index:
-                        st.session_state.db.at[idx, "Date de MAJ"] = now
-                if save_db(st.session_state.db, db_path):
-                    st.success(f"✅ Sauvegardé dans `{db_path}`")
-                else:
-                    st.error("❌ Erreur de sauvegarde.")
-
-        with a2:
-            to_delete = st.multiselect(
-                "Supprimer des polices :",
-                options=db_view["N° Police"].tolist(),
-                placeholder="Sélectionner N° Police(s)…"
-            )
-
-        with a3:
-            if to_delete:
-                if st.button(f"🗑️ Supprimer {len(to_delete)} ligne(s)", type="primary", use_container_width=True):
-                    indices = db[db["N° Police"].isin(to_delete)].index.tolist()
-                    st.session_state.db = delete_rows(st.session_state.db, indices)
-                    if save_db(st.session_state.db, db_path):
-                        st.success(f"✅ {len(indices)} ligne(s) supprimée(s).")
-                        st.rerun()
-                    else:
-                        st.error("❌ Erreur de sauvegarde.")
-
-        # Export filtré
-        st.divider()
-        exp_name = st.text_input("Nom du fichier d'export", value="export_contrats.xlsx", key="exp_name_db")
-        if st.button("📥 Exporter la vue filtrée"):
-            tmp_f = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-            tmp_f.close()
-            if save_db(db_view.reset_index(drop=True), tmp_f.name):
-                with open(tmp_f.name, "rb") as f:
-                    st.download_button(
-                        label=f"⬇️ Télécharger {exp_name}",
-                        data=f.read(), file_name=exp_name,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-
-# ═══ TAB 4 ════════════════════════════════════════════════════
-with tab_export:
-    if not st.session_state.all_results:
-        st.info("💡 Aucun résultat à exporter.")
+        st.markdown(f"<div style='font-size:.65rem;color:#6B7A99;text-align:center;margin-top:.5rem'>{len(db_final)} contrat(s) · {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>", unsafe_allow_html=True)
     else:
-        st.markdown('<div class="section-header">Export ponctuel (session en cours)</div>', unsafe_allow_html=True)
-        st.caption("Exporte les contrats de cette session uniquement, indépendamment de la base persistante.")
+        st.markdown("<div style='font-size:.8rem;color:#3A4560;padding:2rem 0;text-align:center'>Aucune donnée à exporter</div>", unsafe_allow_html=True)
 
-        preview_rows = []
-        for result in st.session_state.all_results:
-            row = {"Fichier": result["filename"]}
-            for field, label in FIELD_LABELS.items():
-                val = result["edited_values"].get(field, "Non trouvé")
-                row[label] = val if not isinstance(val, list) else "—"
-            gp = result["merged"].get("groupe_polices", {})
-            gp_v = gp.get("value") if isinstance(gp, dict) else None
-            row["Groupe (nb polices)"] = len(gp_v) if gp_v else 0
-            preview_rows.append(row)
-        st.dataframe(pd.DataFrame(preview_rows), use_container_width=True)
-
-        if st.button("📥 Générer le fichier Excel", type="primary"):
-            rows_for_export = []
-            for result in st.session_state.all_results:
-                me = {}
-                for field in FIELD_LABELS:
-                    ev = result["edited_values"].get(field, "Non trouvé")
-                    orig = result["merged"].get(field, {})
-                    me[field] = {"value": ev, "confidence": orig.get("confidence",0.0) if isinstance(orig,dict) else 0.0,
-                                 "method": orig.get("method","manual") if isinstance(orig,dict) else "manual"}
-                gp = result["merged"].get("groupe_polices", {})
-                me["groupe_polices"] = gp
-                rows_for_export.append(results_to_row(result["filename"], me))
-            try:
-                out = export_to_excel(rows_for_export, "contrats_session.xlsx")
-                with open(out, "rb") as f:
-                    st.download_button(label="⬇️ Télécharger", data=f.read(),
-                        file_name="contrats_session.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True)
-            except Exception as e:
-                st.error(f"❌ Erreur export : {e}")
+# Footer
+st.markdown("""
+<div style='margin-top:4rem;padding-top:2rem;border-top:1px solid rgba(255,255,255,0.04);
+text-align:center;font-size:.65rem;color:#2D3748;letter-spacing:.15em'>
+CIA · CREDIT INSURANCE ANALYZER · POWERED BY CLAUDE
+</div>
+""", unsafe_allow_html=True)
