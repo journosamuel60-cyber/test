@@ -19,28 +19,42 @@ logger = logging.getLogger(__name__)
 
 COLUMNS = [
     "Fichier",
+    "N° Police",
     "Assuré",
     "Assureur",
+    "Courtier",
     "Taux de prime",
-    "Minimum de prime",
+    "Prime provisionnelle",
+    "Pourcentage assuré",
+    "Délai d'indemnisation",
+    "Délai max crédit",
+    "Date de prise d'effet",
+    "Date d'échéance",
+    "Durée",
+    "Devise",
     "Limite de décaissement",
     "Zone discrétionnaire",
-    "Quotités garanties",
-    "Date d'échéance",
+    "Groupe (nb polices)",
     "Score confiance moyen",
     "Date d'analyse",
 ]
 
 FIELD_MAP = {
-    "fichier": "Fichier",
-    "assure": "Assuré",
-    "assureur": "Assureur",
-    "taux_prime": "Taux de prime",
-    "minimum_prime": "Minimum de prime",
-    "limite_decaissement": "Limite de décaissement",
+    "numero_police":        "N° Police",
+    "assure":               "Assuré",
+    "assureur":             "Assureur",
+    "courtier":             "Courtier",
+    "taux_prime":           "Taux de prime",
+    "prime_provisionnelle": "Prime provisionnelle",
+    "quotites_garanties":   "Pourcentage assuré",
+    "delai_indemnisation":  "Délai d'indemnisation",
+    "delai_max_credit":     "Délai max crédit",
+    "date_prise_effet":     "Date de prise d'effet",
+    "date_echeance":        "Date d'échéance",
+    "duree_police":         "Durée",
+    "devise":               "Devise",
+    "limite_decaissement":  "Limite de décaissement",
     "zone_discretionnaire": "Zone discrétionnaire",
-    "quotites_garanties": "Quotités garanties",
-    "date_echeance": "Date d'échéance",
 }
 
 
@@ -60,8 +74,13 @@ def results_to_row(filename: str, merged_results: dict) -> dict:
         if field == "fichier":
             continue
         field_data = merged_results.get(field, {"value": "Non trouvé", "confidence": 0.0})
-        row[col_name] = field_data.get("value", "Non trouvé")
+        val = field_data.get("value", "Non trouvé")
+        row[col_name] = val if not isinstance(val, list) else str(val)
         confidences.append(field_data.get("confidence", 0.0))
+
+    # Groupe de polices — nombre
+    gp = merged_results.get("groupe_polices", {}).get("value")
+    row["Groupe (nb polices)"] = len(gp) if isinstance(gp, list) else 0
 
     # Score moyen (uniquement sur les champs trouvés)
     found = [c for c in confidences if c > 0]
@@ -139,14 +158,22 @@ def export_to_excel(rows: List[dict], output_path: str) -> str:
             # ── Largeurs des colonnes ──
             col_widths = {
                 "Fichier": 30,
-                "Assuré": 25,
-                "Assureur": 25,
+                "N° Police": 15,
+                "Assuré": 28,
+                "Assureur": 28,
+                "Courtier": 25,
                 "Taux de prime": 15,
-                "Minimum de prime": 18,
-                "Limite de décaissement": 22,
-                "Zone discrétionnaire": 22,
-                "Quotités garanties": 18,
+                "Prime provisionnelle": 20,
+                "Pourcentage assuré": 18,
+                "Délai d'indemnisation": 20,
+                "Délai max crédit": 16,
+                "Date de prise d'effet": 20,
                 "Date d'échéance": 16,
+                "Durée": 12,
+                "Devise": 12,
+                "Limite de décaissement": 22,
+                "Zone discrétionnaire": 20,
+                "Groupe (nb polices)": 18,
                 "Score confiance moyen": 18,
                 "Date d'analyse": 18,
             }

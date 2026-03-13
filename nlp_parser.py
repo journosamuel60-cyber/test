@@ -13,6 +13,22 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
+# CHAMPS EXTRAITS
+# ─────────────────────────────────────────────
+
+SCALAR_FIELDS = [
+    "numero_police", "assure", "assureur", "courtier",
+    "taux_prime", "prime_provisionnelle", "quotites_garanties",
+    "delai_indemnisation", "delai_max_credit",
+    "date_prise_effet", "date_echeance", "duree_police",
+    "devise", "limite_decaissement", "zone_discretionnaire",
+]
+
+STRUCTURED_FIELDS = ["groupe_polices"]
+ALL_FIELDS = SCALAR_FIELDS + STRUCTURED_FIELDS
+
+
+# ─────────────────────────────────────────────
 # PROMPT SYSTÈME
 # ─────────────────────────────────────────────
 
@@ -20,31 +36,45 @@ SYSTEM_PROMPT = """Tu es un expert en analyse de contrats d'assurance-crédit (c
 Tu parles couramment le français et l'anglais.
 
 Ta mission : extraire des informations contractuelles précises depuis le texte fourni.
+Le document peut être une police Atradius format Modula, Coface, Euler Hermes, ou autre assureur-crédit.
 
 Réponds UNIQUEMENT avec un objet JSON valide, sans texte avant ou après.
 Si une information est absente ou ambiguë, utilise la valeur "Non trouvé".
 
 Format de réponse obligatoire :
 {
+  "numero_police": "Numéro de la police (ex: 1453314 USD)",
   "assure": "Nom de l'assuré / souscripteur",
   "assureur": "Nom de l'assureur / compagnie",
-  "taux_prime": "Taux de prime (ex: 0.12% ou 1.2‰)",
-  "minimum_prime": "Prime minimum annuelle (ex: 5 000 EUR)",
-  "limite_decaissement": "Plafond total d'indemnisation (ex: 500 000 EUR)",
-  "zone_discretionnaire": "Limite discrétionnaire / non-dénommés (ex: 30 000 EUR)",
-  "quotites_garanties": "Pourcentage de couverture (ex: 85% ou 80%-90%)",
-  "date_echeance": "Date d'échéance du contrat (ex: 31/12/2025)"
+  "courtier": "Nom du courtier / broker (si présent, sinon Non trouvé)",
+  "taux_prime": "Taux de prime (ex: 0,052% ou 1.2‰)",
+  "prime_provisionnelle": "Prime provisionnelle totale (ex: 4.510 USD ou 12 000 EUR)",
+  "quotites_garanties": "Pourcentage assuré / couverture (ex: 95%)",
+  "delai_indemnisation": "Délai d'indemnisation (ex: 6 mois)",
+  "delai_max_credit": "Délai maximum de crédit consenti (ex: 180 jours)",
+  "date_prise_effet": "Date de prise d'effet / début de la police",
+  "date_echeance": "Date d'échéance / fin de la police",
+  "duree_police": "Durée de la police (ex: 13 mois)",
+  "devise": "Devise de la police (ex: Dollar US, EUR, CAD)",
+  "limite_decaissement": "Plafond total d'indemnisation (ex: CAD 2.000.000)",
+  "zone_discretionnaire": "Limite discrétionnaire / Credit Check (ex: 23.000)"
 }
 
-Termes équivalents à reconnaître :
+Termes équivalents :
+- Numéro police = policy number, police N°
 - Assuré = policyholder, insured, souscripteur
 - Assureur = insurer, underwriter, compagnie d'assurance
-- Taux de prime = prime rate, taux d'assurance, insurance rate
-- Minimum de prime = minimum premium, prime plancher, MAP
-- Limite de décaissement = aggregate limit, AIL, plafond d'indemnisation
-- Zone discrétionnaire = non-dénommé, discretionary limit, non-named buyers, BDL
-- Quotités garanties = coverage ratio, percentage of cover, taux d'indemnisation
-- Date d'échéance = expiry date, renewal date, date de renouvellement
+- Courtier = broker, intermédiaire
+- Taux de prime = prime rate, taux d'assurance
+- Prime provisionnelle = provisional premium, prime totale, acompte
+- Pourcentage assuré = coverage ratio, quotités garanties, taux d'indemnisation
+- Délai d'indemnisation = indemnification period, waiting period
+- Délai maximum de crédit = maximum credit term
+- Date de prise d'effet = effective date, inception date
+- Date d'échéance = expiry date, renewal date, fin de police
+- Durée de la police = policy term
+- Limite de décaissement = aggregate limit, AIL, maximum d'indemnité
+- Zone discrétionnaire = non-dénommé, discretionary limit, BDL, Credit Check
 """
 
 
@@ -53,17 +83,11 @@ Termes équivalents à reconnaître :
 # ─────────────────────────────────────────────
 
 def extract_with_llm(text: str, api_key: Optional[str] = None) -> dict:
-    """
-    Envoie le texte à Claude pour extraction sémantique.
-    Retourne un dict avec les champs extraits et scores de confiance.
-    """
     try:
         import anthropic
 
-        # Tronquer le texte si trop long (max ~6000 tokens de contexte utile)
         max_chars = 15000
         if len(text) > max_chars:
-            # Prendre début + fin (les infos importantes sont souvent aux deux extrémités)
             text_truncated = text[:8000] + "\n\n[...]\n\n" + text[-7000:]
             logger.info(f"Texte tronqué: {len(text)} → ~{max_chars} caractères")
         else:
@@ -73,22 +97,17 @@ def extract_with_llm(text: str, api_key: Optional[str] = None) -> dict:
 
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=1000,
+            max_tokens=1200,
             system=SYSTEM_PROMPT,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"Analyse ce contrat d'assurance-crédit et extrait les informations demandées :\n\n{text_truncated}"
-                }
-            ]
+            messages=[{
+                "role": "user",
+                "content": f"Analyse ce contrat d'assurance-crédit et extrait les informations demandées :\n\n{text_truncated}"
+            }]
         )
 
         response_text = message.content[0].text.strip()
         logger.debug(f"Réponse LLM: {response_text[:500]}")
-
-        # Parser le JSON retourné
-        parsed = _parse_llm_response(response_text)
-        return parsed
+        return _parse_llm_response(response_text)
 
     except ImportError:
         logger.warning("anthropic non installé, LLM désactivé")
@@ -99,26 +118,18 @@ def extract_with_llm(text: str, api_key: Optional[str] = None) -> dict:
 
 
 def _parse_llm_response(response_text: str) -> dict:
-    """Parse la réponse JSON du LLM avec gestion des erreurs."""
-    # Nettoyer les éventuels backticks markdown
-    cleaned = re.sub(r"```(?:json)?", "", response_text).strip()
-    cleaned = cleaned.rstrip("```").strip()
+    cleaned = re.sub(r"```(?:json)?", "", response_text).strip().rstrip("```").strip()
 
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError:
-        # Tentative d'extraction partielle
         logger.warning("JSON invalide, tentative d'extraction partielle")
         data = {}
-        for field in ["assure", "assureur", "taux_prime", "minimum_prime",
-                      "limite_decaissement", "zone_discretionnaire",
-                      "quotites_garanties", "date_echeance"]:
-            pattern = rf'"{field}"\s*:\s*"([^"]*)"'
-            match = re.search(pattern, cleaned)
+        for field in SCALAR_FIELDS:
+            match = re.search(rf'"{field}"\s*:\s*"([^"]*)"', cleaned)
             if match:
                 data[field] = match.group(1)
 
-    # Ajouter scores de confiance
     result = {}
     for field, value in data.items():
         is_found = value not in ["Non trouvé", "", None, "N/A", "non trouvé"]
@@ -127,7 +138,6 @@ def _parse_llm_response(response_text: str) -> dict:
             "confidence": 0.85 if is_found else 0.0,
             "method": "llm" if is_found else "none"
         }
-
     return result
 
 
@@ -137,26 +147,21 @@ def _parse_llm_response(response_text: str) -> dict:
 
 def merge_results(regex_results: dict, llm_results: dict) -> dict:
     """
-    Fusionne les résultats regex et LLM.
-    Stratégie : prendre le résultat avec la meilleure confiance.
+    Fusionne regex et LLM.
+    - Champs scalaires : meilleure confiance gagne.
+    - groupe_polices : toujours depuis regex (structure liste).
     """
-    fields = [
-        "assure", "assureur", "taux_prime", "minimum_prime",
-        "limite_decaissement", "zone_discretionnaire",
-        "quotites_garanties", "date_echeance"
-    ]
-
     merged = {}
-    for field in fields:
-        regex = regex_results.get(field, {"value": "Non trouvé", "confidence": 0.0, "method": "none"})
-        llm = llm_results.get(field, {"value": "Non trouvé", "confidence": 0.0, "method": "none"})
 
-        regex_found = regex["value"] != "Non trouvé"
-        llm_found = llm["value"] != "Non trouvé"
+    for field in SCALAR_FIELDS:
+        regex = regex_results.get(field, {"value": None, "confidence": 0.0})
+        llm   = llm_results.get(field,   {"value": None, "confidence": 0.0})
+
+        regex_found = regex.get("value") not in [None, "Non trouvé", ""]
+        llm_found   = llm.get("value")   not in [None, "Non trouvé", ""]
 
         if regex_found and llm_found:
-            # Les deux trouvent quelque chose : prendre le plus confiant
-            if regex["confidence"] >= llm["confidence"]:
+            if regex.get("confidence", 0) >= llm.get("confidence", 0):
                 merged[field] = {**regex, "method": "regex+llm"}
             else:
                 merged[field] = {**llm, "method": "llm+regex"}
@@ -166,5 +171,9 @@ def merge_results(regex_results: dict, llm_results: dict) -> dict:
             merged[field] = {**llm, "method": "llm"}
         else:
             merged[field] = {"value": "Non trouvé", "confidence": 0.0, "method": "none"}
+
+    # groupe_polices — liste structurée, regex uniquement
+    gp = regex_results.get("groupe_polices", {"value": None, "confidence": 0.0})
+    merged["groupe_polices"] = {**gp, "method": "regex" if gp.get("value") else "none"}
 
     return merged
