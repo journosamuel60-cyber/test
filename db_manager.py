@@ -202,7 +202,10 @@ def save_db(df: pd.DataFrame, path: str) -> bool:
         from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
         from openpyxl.utils import get_column_letter
 
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        abs_path = os.path.abspath(path)
+        parent_dir = os.path.dirname(abs_path)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
 
         with pd.ExcelWriter(path, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name=SHEET_NAME)

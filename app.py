@@ -17,7 +17,7 @@ from utils import (ProcessingLog, count_found_fields, format_confidence,
 
 setup_logging()
 logger = logging.getLogger(__name__)
-DEFAULT_DB_PATH = "contrats_base.xlsx"
+DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "contrats_base.xlsx")
 TMP_DIR = "/tmp/cia_uploads"
 
 FIELD_LABELS = {
